@@ -183,7 +183,8 @@ class Llama3Base(LLMBase):
         ):
             print("Skip sha_attention optimization")
         else:
-            modeling_llama.LLAMA_ATTENTION_CLASSES["eager"] = SHALlamaAttention
+            # Updated for transformers 4.54+: Direct class replacement instead of LLAMA_ATTENTION_CLASSES
+            modeling_llama.LlamaAttention = SHALlamaAttention
 
         def bypass_RotaryEmbedding(self, x, position_ids, *args, **kwargs):
             return position_ids
