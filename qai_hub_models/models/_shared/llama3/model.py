@@ -89,16 +89,12 @@ class RopeEmbedding(Embedding):
             if hasattr(config, "head_dim")
             else config.hidden_size // config.num_attention_heads
         )
-        kwargs = {
-            "max_position_embeddings": config.max_position_embeddings,
-            "base": config.rope_theta,
-            "config": config,
-        }
 
         if not hasattr(config, "rope_scaling"):
             setattr(config, "rope_scaling", None)
 
-        rope = modeling_llama.LlamaRotaryEmbedding(dim=head_dim, **kwargs)
+        # Updated for transformers 4.54+: LlamaRotaryEmbedding now takes only config parameter
+        rope = modeling_llama.LlamaRotaryEmbedding(config)
         dummy_x = torch.Tensor([1.0])
         position_ids = torch.arange(max_length).view(1, -1)
         if hasattr(rope, "_original_forward"):
