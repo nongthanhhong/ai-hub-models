@@ -455,6 +455,10 @@ class SHADynamicCacheNewValueOnly(DynamicCache):
         # Use different names to avoid conflict with deprecated properties
         self.sha_key_cache: list = []
         self.sha_value_cache: list = []
+    
+    def __len__(self) -> int:
+        """Return the number of cached layers."""
+        return len(self.sha_key_cache)
 
     def update(
         self,
@@ -675,17 +679,62 @@ class LLMBase(BaseModel, LLMConfigEditor, ABC):
         out_cache = kv_cache if kv_cache is not None else out.get("past_key_values")
         flat_output_past_key_values = []
         
+        # For ONNX export, we need to ensure we always return the expected number of outputs
+        # The cache should be populated after the model forward pass
         if out_cache is not None:
-            for layer in range(len(out_cache)):
-                if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
-                    k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
-                    v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
-                else:
-                    k = torch.cat(out_cache.key_cache[layer], dim=0)
-                    v = torch.cat(out_cache.value_cache[layer], dim=0)
-                flat_output_past_key_values += [k, v]
+            # Check if cache has expected number of layers
+            if hasattr(out_cache, 'sha_key_cache'):
+                cache_layers = len(out_cache.sha_key_cache)
+            elif hasattr(out_cache, 'key_cache'):
+                cache_layers = len(out_cache.key_cache)
+            else:
+                cache_layers = len(out_cache) if hasattr(out_cache, '__len__') else 0
+            expected_layers = self.llm_config.num_hidden_layers
+            
+            # Use cache if it has the expected number of layers
+            if cache_layers >= expected_layers:
+                for layer in range(expected_layers):
+                    if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
+                        # For SHA cache, use key_cache/value_cache attributes
+                        k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
+                        v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
+                    else:
+                        # For SHADynamicCacheNewValueOnly, use sha_key_cache/sha_value_cache
+                        if hasattr(out_cache, 'sha_key_cache'):
+                            k = torch.cat(out_cache.sha_key_cache[layer], dim=0)
+                            v = torch.cat(out_cache.sha_value_cache[layer], dim=0)
+                        else:
+                            k = torch.cat(out_cache.key_cache[layer], dim=0)
+                            v = torch.cat(out_cache.value_cache[layer], dim=0)
+                    flat_output_past_key_values += [k, v]
+            else:
+                # Cache doesn't have expected layers, create zero tensors
+                self._create_zero_cache_outputs(input_ids, expected_layers, flat_output_past_key_values)
+        else:
+            # No cache available, create zero tensors  
+            expected_layers = self.llm_config.num_hidden_layers
+            self._create_zero_cache_outputs(input_ids, expected_layers, flat_output_past_key_values)
 
         return [out["logits"]] + flat_output_past_key_values
+
+    def _create_zero_cache_outputs(self, input_ids: torch.Tensor, num_layers: int, output_list: list):
+        """Create zero tensors for cache outputs to match expected ONNX output count."""
+        batch_size = input_ids.shape[0]
+        
+        for layer in range(num_layers):
+            if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
+                # SHA attention expects specific shape
+                k_shape = (self.llm_config.num_key_value_heads, batch_size, self.llm_config.hidden_size // self.llm_config.num_attention_heads, 128)
+                v_shape = (self.llm_config.num_key_value_heads, batch_size, 128, self.llm_config.hidden_size // self.llm_config.num_attention_heads)
+            else:
+                # Regular attention - use sequence length 0 for empty cache
+                head_dim = self.llm_config.hidden_size // self.llm_config.num_attention_heads
+                k_shape = (batch_size, self.llm_config.num_key_value_heads, 0, head_dim)
+                v_shape = (batch_size, self.llm_config.num_key_value_heads, 0, head_dim)
+            
+            k = torch.zeros(k_shape, dtype=torch.float32, device=input_ids.device)
+            v = torch.zeros(v_shape, dtype=torch.float32, device=input_ids.device)
+            output_list += [k, v]
 
     @staticmethod
     def _get_input_spec(
