@@ -44,8 +44,8 @@ def main():
     parser = export_parser(
         model_cls=Model,
         supported_precision_runtimes={
-            Precision.w4: [TargetRuntime.QNN_CONTEXT_BINARY],
-            Precision.w4a16: [TargetRuntime.QNN_CONTEXT_BINARY],
+            Precision.w4: [TargetRuntime.QNN_CONTEXT_BINARY, TargetRuntime.QNN_DLC],
+            Precision.w4a16: [TargetRuntime.QNN_CONTEXT_BINARY, TargetRuntime.QNN_DLC],
         },
         default_export_device=DEFAULT_EXPORT_DEVICE,
         uses_link_job=True,

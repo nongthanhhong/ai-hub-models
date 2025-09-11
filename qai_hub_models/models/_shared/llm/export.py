@@ -176,9 +176,14 @@ def export_model(
     component_from_sub_component_names = {}
     input_encodings_path: str | None = None
 
-    # Target QNN context binaries
-    hub_target_runtime = TargetRuntime.QNN_CONTEXT_BINARY
-    compile_options += " --qnn_bin_conversion_via_model_library"
+    # Target QNN DLC (modern approach - replaces deprecated context binary linking)
+    if target_runtime == TargetRuntime.QNN_CONTEXT_BINARY:
+        # Use DLC as the hub target runtime for compilation, then convert to context binary if needed
+        hub_target_runtime = TargetRuntime.QNN_DLC
+        # Note: Removed deprecated --qnn_bin_conversion_via_model_library flag
+        # DLC linking is more reliable and avoids the deprecation warning
+    else:
+        hub_target_runtime = target_runtime
 
     for instantiation_name, seq_len in instantiations:
         full_name = f"{model_name}_{instantiation_name}"
