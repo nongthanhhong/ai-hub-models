@@ -87,7 +87,7 @@ except (ImportError, ModuleNotFoundError):
         "Install qai-hub-models on a Linux machine to use quantized models."
     )
 
-MIN_TRANFORMER_VERSION = "4.45.0"
+MIN_TRANFORMER_VERSION = "4.54.0"
 MIN_AIMET_ONNX_VERSION = "2.8.0"
 # isort: off
 
