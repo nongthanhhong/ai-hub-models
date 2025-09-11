@@ -671,17 +671,19 @@ class LLMBase(BaseModel, LLMConfigEditor, ABC):
             past_key_values=kv_cache,
         )
 
-        out_cache = out["past_key_values"]
+        # In transformers 4.54.0+, cache is modified in-place, use the passed kv_cache
+        out_cache = kv_cache if kv_cache is not None else out.get("past_key_values")
         flat_output_past_key_values = []
-        for layer in range(len(out_cache)):
-            if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
-                k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
-                v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
-            else:
-
-                k = torch.cat(out_cache.key_cache[layer], dim=0)
-                v = torch.cat(out_cache.value_cache[layer], dim=0)
-            flat_output_past_key_values += [k, v]
+        
+        if out_cache is not None:
+            for layer in range(len(out_cache)):
+                if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
+                    k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
+                    v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
+                else:
+                    k = torch.cat(out_cache.key_cache[layer], dim=0)
+                    v = torch.cat(out_cache.value_cache[layer], dim=0)
+                flat_output_past_key_values += [k, v]
 
         return [out["logits"]] + flat_output_past_key_values
 
