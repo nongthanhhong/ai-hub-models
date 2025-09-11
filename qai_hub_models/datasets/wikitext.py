@@ -47,27 +47,12 @@ class WikiText(BaseDataset):
         # Causes a big drop in quantization accuracy
         separator = "\n\n" if split == DatasetSplit.TEST else self.tokenizer.bos_token
         
-        # Fix: Limit the concatenated text to avoid exceeding model's max_position_embeddings
-        # Get model's maximum sequence length from tokenizer config
-        max_model_length = getattr(self.tokenizer, 'model_max_length', 131072)
-        if max_model_length > 1000000:  # Some tokenizers have very large default values
-            max_model_length = 131072  # Use Llama 3.2's actual limit
-            
-        # Take only the first portion of text that won't exceed the limit
         concatenated_text = separator.join(raw_dataset["text"])
-        
-        # Rough estimate: limit text to 80% of max length to account for tokenization expansion
-        max_chars = int(max_model_length * 0.8 * 4)  # Rough char-to-token ratio
-        if len(concatenated_text) > max_chars:
-            concatenated_text = concatenated_text[:max_chars]
-            print(f"WARNING: WikiText dataset truncated to {max_chars} characters to fit model limits")
         
         self.tokens = self.tokenizer(
             concatenated_text,
             return_tensors="pt",
             add_special_tokens=True,
-            max_length=max_model_length,
-            truncation=True,
         )
 
     def load_raw_dataset(self) -> Dataset:
