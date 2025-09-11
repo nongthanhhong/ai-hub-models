@@ -201,14 +201,20 @@ class SHALlamaAttention(LlamaAttention):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Cache] = None,
+        past_key_values: Optional[Cache] = None,  # For transformers 4.54.0+ compatibility
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[
             tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
+        **kwargs,  # Accept any additional kwargs for forward compatibility
     ) -> tuple[torch.Tensor, Optional[list[torch.Tensor]], Optional[Cache]]:
 
+        # Handle both past_key_value and past_key_values for transformers 4.54.0+ compatibility
+        if past_key_values is not None and past_key_value is None:
+            past_key_value = past_key_values
+        
         bsz, q_len, _ = hidden_states.size()
 
         # Get hidden_size from config for transformers 4.54.0+ compatibility
