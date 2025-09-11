@@ -450,6 +450,12 @@ class SHADynamicCacheNewValueOnly(DynamicCache):
     new values without accumulation.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Use different names to avoid conflict with deprecated properties
+        self.sha_key_cache: list = []
+        self.sha_value_cache: list = []
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -457,31 +463,34 @@ class SHADynamicCacheNewValueOnly(DynamicCache):
         layer_idx: int,
         cache_kwargs: Optional[dict[str, Any]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Update the number of seen tokens
-        if layer_idx == 0:
-            # self._seen_tokens += key_states.shape[-2]
-            # This line is updated
-            self._seen_tokens += key_states[0].shape[-2]
-
         # Update the cache
-        if len(self.key_cache) <= layer_idx:
-            self.key_cache.append(key_states)
-            self.value_cache.append(value_states)
+        if len(self.sha_key_cache) <= layer_idx:
+            self.sha_key_cache.append(key_states)
+            self.sha_value_cache.append(value_states)
         else:
             # Do not concatenate the cache, we only need the latest entry
-            self.key_cache[layer_idx] = key_states
-            self.value_cache[layer_idx] = value_states
+            self.sha_key_cache[layer_idx] = key_states
+            self.sha_value_cache[layer_idx] = value_states
 
-        return self.key_cache[layer_idx], self.value_cache[layer_idx]
+        return self.sha_key_cache[layer_idx], self.sha_value_cache[layer_idx]
 
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""
         if layer_idx is None:
             layer_idx = 0
-        if len(self.key_cache) <= layer_idx:
+        if len(self.sha_key_cache) <= layer_idx:
             return 0
         # [0] added to get shape since the outermost is list
-        return self.key_cache[layer_idx][0].shape[-2]
+        return self.sha_key_cache[layer_idx][0].shape[-2]
+
+    # Provide backward compatibility properties for existing code
+    @property
+    def key_cache(self):
+        return self.sha_key_cache
+
+    @property 
+    def value_cache(self):
+        return self.sha_value_cache
 
 
 class LLMBase(BaseModel, LLMConfigEditor, ABC):
