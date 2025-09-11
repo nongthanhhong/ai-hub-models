@@ -368,7 +368,7 @@ class LlamaMixin(AimetEncodingLoaderMixin, BaseModel):
         )
         patched_inputs: SampleInputsType = {}
         for key, val in data.items():
-            patched_inputs[key] = [val.detach().numpy()]
+            patched_inputs[key] = [val.detach().cpu().numpy()]
         return patched_inputs
 
     def preferred_hub_source_model_format(

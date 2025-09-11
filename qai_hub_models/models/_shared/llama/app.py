@@ -292,20 +292,20 @@ class ChatApp:
             padding="max_length",
             max_length=max_seq_len,
         )
-        input_ids = input_tokens["input_ids"].type(torch.long)
+        input_ids = input_tokens["input_ids"].to(torch.long)
         num_tokens = int(torch.sum(input_tokens["attention_mask"]).item())
         padding_size = max_seq_len - num_tokens
         position_ids_lst = [0] * (padding_size) + list(range(0, num_tokens))
         position_ids = (
-            torch.Tensor(position_ids_lst).type(torch.long).reshape(1, max_seq_len)
+            torch.tensor(position_ids_lst, dtype=torch.long).reshape(1, max_seq_len)
         )
-        attention_mask = input_tokens["attention_mask"].type(torch.float32)
+        attention_mask = input_tokens["attention_mask"].to(torch.float32)
         cm_attention_masks = self.prepare_combined_attention_mask(
             attention_mask=attention_mask,
             input_shape=input_tokens["attention_mask"].shape,
         )
         position_ids = (
-            torch.Tensor(position_ids).type(torch.long).reshape(1, max_seq_len)
+            torch.tensor(position_ids, dtype=torch.long).reshape(1, max_seq_len)
         )
         position_ids_cos, position_ids_sin = RopeEmbedding(
             max_length=max_seq_len
@@ -336,10 +336,10 @@ class ChatApp:
             if num_of_tokens_processed >= max_seq_len:
                 break
 
-            input_ids = output_token.reshape(-1, 1).type(torch.int32)
+            input_ids = output_token.reshape(-1, 1).to(torch.int32)
             # Shift attention_mask and position_ids
             attention_mask = torch.cat(
-                (attention_mask[:, 1:], torch.Tensor([[1]])), dim=-1
+                (attention_mask[:, 1:], torch.tensor([[1]])), dim=-1
             )
             cm_attention_masks = self.prepare_combined_attention_mask(
                 attention_mask=attention_mask,
@@ -348,7 +348,7 @@ class ChatApp:
             )
             position_ids = (position_ids[:, -1] + 1).reshape(-1, 1)
 
-            position_ids = torch.Tensor(position_ids).type(torch.long).reshape(1, 1)
+            position_ids = torch.tensor(position_ids, dtype=torch.long).reshape(1, 1)
             position_ids_cos, position_ids_sin = RopeEmbedding(
                 max_length=max_seq_len
             ).get_embedding(position_ids)

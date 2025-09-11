@@ -79,23 +79,28 @@ class SHALlamaAttention(LlamaAttention):
 
     def prepare_conv(self):
         if not hasattr(self, "forward_no_conv"):
+            # Get attributes from config for transformers 4.54.0+ compatibility
+            hidden_size = self.config.hidden_size
+            num_heads = self.config.num_attention_heads
+            num_key_value_heads = self.config.num_key_value_heads
+            
             self.q_proj_conv = nn.Conv2d(
-                self.hidden_size, self.num_heads * self.head_dim, 1, bias=False
+                hidden_size, num_heads * self.head_dim, 1, bias=False
             )
             self.k_proj_conv = nn.Conv2d(
-                self.hidden_size,
-                self.num_key_value_heads * self.head_dim,
+                hidden_size,
+                num_key_value_heads * self.head_dim,
                 1,
                 bias=False,
             )
             self.v_proj_conv = nn.Conv2d(
-                self.hidden_size,
-                self.num_key_value_heads * self.head_dim,
+                hidden_size,
+                num_key_value_heads * self.head_dim,
                 1,
                 bias=False,
             )
             self.o_proj_conv = nn.Conv2d(
-                self.num_heads * self.head_dim, self.hidden_size, 1, bias=False
+                num_heads * self.head_dim, hidden_size, 1, bias=False
             )
 
             self.q_proj_conv.weight.data.copy_(self.q_proj.weight[:, :, None, None])
@@ -122,22 +127,27 @@ class SHALlamaAttention(LlamaAttention):
             )
 
         if not hasattr(self, "forward_mha"):
+            # Get attributes from config for transformers 4.54.0+ compatibility
+            hidden_size = self.config.hidden_size
+            num_heads = self.config.num_attention_heads
+            num_key_value_heads = self.config.num_key_value_heads
+            
             self.q_proj_sha = nn.ModuleList(
                 [
-                    nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False)
-                    for _ in range(self.num_heads)
+                    nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                    for _ in range(num_heads)
                 ]
             )
             self.k_proj_sha = nn.ModuleList(
                 [
-                    nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False)
-                    for _ in range(self.num_key_value_heads)
+                    nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                    for _ in range(num_key_value_heads)
                 ]
             )
             self.v_proj_sha = nn.ModuleList(
                 [
-                    nn.Conv2d(self.hidden_size, self.head_dim, 1, bias=False)
-                    for _ in range(self.num_key_value_heads)
+                    nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                    for _ in range(num_key_value_heads)
                 ]
             )
 
@@ -164,12 +174,16 @@ class SHALlamaAttention(LlamaAttention):
                 self.forward_sha
             )  # pyright: ignore[reportAttributeAccessIssue]
 
-        for i in range(self.num_heads):
+        # Get attributes from config for transformers 4.54.0+ compatibility
+        num_heads = self.config.num_attention_heads
+        num_key_value_heads = self.config.num_key_value_heads
+        
+        for i in range(num_heads):
             self.q_proj_sha[i].weight.data.copy_(
                 self.q_proj_conv.weight[i * self.head_dim : (i + 1) * self.head_dim, :]
             )
 
-        for i in range(self.num_key_value_heads):
+        for i in range(num_key_value_heads):
             self.k_proj_sha[i].weight.data.copy_(
                 self.k_proj_conv.weight[i * self.head_dim : (i + 1) * self.head_dim, :]
             )
@@ -197,7 +211,9 @@ class SHALlamaAttention(LlamaAttention):
 
         bsz, q_len, _ = hidden_states.size()
 
-        hidden_states = torch.reshape(hidden_states, (bsz, -1, 1, self.hidden_size))
+        # Get hidden_size from config for transformers 4.54.0+ compatibility
+        hidden_size = self.config.hidden_size
+        hidden_states = torch.reshape(hidden_states, (bsz, -1, 1, hidden_size))
         hidden_states = hidden_states.transpose(1, 3)
 
         query_states = [
@@ -252,8 +268,10 @@ class SHALlamaAttention(LlamaAttention):
                 torch.cat([pv, v], dim=2) for pv, v in zip(past_value, value_states)
             ]
 
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
+        # Get num_key_value_groups from config for transformers 4.54.0+ compatibility
+        num_key_value_groups = self.config.num_attention_heads // self.config.num_key_value_heads
+        key_states = repeat_kv(key_states, num_key_value_groups)
+        value_states = repeat_kv(value_states, num_key_value_groups)
 
         attn_weights = [
             torch.matmul(q, k) / math.sqrt(self.head_dim)
@@ -291,7 +309,7 @@ class SHALlamaAttention(LlamaAttention):
         attn_output_return = attn_output_return.permute(0, 3, 1, 2)
         attn_output_return = self.o_proj_conv(attn_output_return)
         attn_output_return = attn_output_return.transpose(1, 3)
-        attn_output_return = attn_output_return.reshape(bsz, q_len, self.hidden_size)
+        attn_output_return = attn_output_return.reshape(bsz, q_len, hidden_size)
 
         attn_weights_return = attn_weights if output_attentions else None
 

@@ -95,7 +95,7 @@ class RopeEmbedding(Embedding):
 
         # Updated for transformers 4.54+: LlamaRotaryEmbedding now takes only config parameter
         rope = modeling_llama.LlamaRotaryEmbedding(config)
-        dummy_x = torch.Tensor([1.0])
+        dummy_x = torch.tensor([1.0])
         position_ids = torch.arange(max_length).view(1, -1)
         if hasattr(rope, "_original_forward"):
             embeddings = rope._original_forward(dummy_x, position_ids)

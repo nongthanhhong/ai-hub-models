@@ -133,10 +133,10 @@ class StableDiffusionApp:
                 cond_embeddings, uncond_embeddings = torch.split(embeddings, 1, 0)
             else:
                 cond_embeddings = self.text_encoder(
-                    text_input.input_ids.type(torch.int32)
+                    text_input.input_ids.to(torch.int32)
                 )
                 uncond_embeddings = self.text_encoder(
-                    uncond_input.input_ids.type(torch.int32)
+                    uncond_input.input_ids.to(torch.int32)
                 )
             return cond_embeddings, uncond_embeddings
 

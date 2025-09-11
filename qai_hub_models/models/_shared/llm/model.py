@@ -267,19 +267,17 @@ def sample_input(
     )
     input_ids = input_tokens[
         "input_ids"
-    ].type(  # pyright: ignore [reportAttributeAccessIssue]
-        torch.int32
-    )[
+    ].to(torch.int32)[
         :, -sequence_length:
     ]
 
     padding_size = sequence_length - num_tokens
     position_ids = [0] * (padding_size) + list(range(0, sequence_length - padding_size))
     position_ids = (
-        torch.Tensor(position_ids).type(torch.long).reshape(1, sequence_length)
+        torch.tensor(position_ids, dtype=torch.long).reshape(1, sequence_length)
     )
     position_ids = (
-        torch.Tensor(position_ids).type(torch.long).reshape(1, sequence_length)
+        torch.tensor(position_ids, dtype=torch.long).reshape(1, sequence_length)
     )
     position_ids_cos, position_ids_sin = embedding.get_embedding(position_ids)
     attention_mask = torch.zeros((1, context_length))
@@ -291,10 +289,10 @@ def sample_input(
     )
 
     input_dict = {
-        "input_ids": [input_ids.detach().numpy()],
-        "attention_mask": [cm_attention_masks.detach().numpy()],
-        "position_ids_cos": [position_ids_cos.detach().numpy()],
-        "position_ids_sin": [position_ids_sin.detach().numpy()],
+        "input_ids": [input_ids.detach().cpu().numpy()],
+        "attention_mask": [cm_attention_masks.detach().cpu().numpy()],
+        "position_ids_cos": [position_ids_cos.detach().cpu().numpy()],
+        "position_ids_sin": [position_ids_sin.detach().cpu().numpy()],
     }
 
     # Populate the rest with zeros (KV cache input)
