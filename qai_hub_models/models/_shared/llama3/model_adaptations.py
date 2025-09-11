@@ -209,7 +209,7 @@ class SHALlamaAttention(LlamaAttention):
             tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
         **kwargs,  # Accept any additional kwargs for forward compatibility
-    ) -> tuple[torch.Tensor, Optional[list[torch.Tensor]], Optional[Cache]]:
+    ) -> tuple[torch.Tensor, Optional[list[torch.Tensor]]]:
 
         # Handle both past_key_value and past_key_values for transformers 4.54.0+ compatibility
         if past_key_values is not None and past_key_value is None:
@@ -319,7 +319,7 @@ class SHALlamaAttention(LlamaAttention):
 
         attn_weights_return = attn_weights if output_attentions else None
 
-        return attn_output_return, attn_weights_return, past_key_value
+        return attn_output_return, attn_weights_return
 
 
 class ConvInplaceLinear(torch.nn.Conv2d):

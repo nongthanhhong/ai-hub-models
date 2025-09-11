@@ -19,7 +19,12 @@ from typing import Any, cast
 import numpy as np
 import onnx
 import onnxruntime
-import pkg_resources
+try:
+    # Use modern importlib.metadata (Python 3.8+)
+    from importlib.metadata import distributions
+except ImportError:
+    # Fallback for older Python versions
+    from importlib_metadata import distributions
 import torch
 
 from qai_hub_models.models.protocols import ExecutableModelProtocol
@@ -72,8 +77,7 @@ def _verify_onnxruntime_qnn_installed() -> None:
             raise ONNXRUNTIME_QNN_ERROR
         return
 
-    pkgs = cast(pkg_resources.WorkingSet, pkg_resources.working_set)
-    pkg_names = {cast(str, p.key) for p in pkgs}
+    pkg_names = {dist.metadata['name'].lower() for dist in distributions()}
 
     ORT_QNN_PACKAGE_NAME = "onnxruntime-qnn"
     ORT_PACKAGE_NAME = "onnxruntime"
