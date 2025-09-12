@@ -101,6 +101,11 @@ class LLM_Loader:
 
 
 class LLM_Generator(GenerationMixin, torch.nn.Module):
+    # Class attributes required for transformers>=4.54.0 compatibility
+    _is_stateful = False
+    _no_split_modules = []
+    _tied_weights_keys = []
+    
     def __init__(
         self,
         models: list[Union[LLM_AIMETOnnx, LLM_Loader]],
@@ -137,6 +142,13 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
 
     @property
     def _supports_cache_class(self) -> bool:
+        return True
+    
+    def _supports_default_dynamic_cache(self) -> bool:
+        """
+        Indicates if the model supports the default DynamicCache implementation.
+        Required for transformers>=4.54.0 compatibility.
+        """
         return True
 
     @property
