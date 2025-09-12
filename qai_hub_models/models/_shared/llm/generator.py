@@ -182,13 +182,21 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
         # them by the time they reach this function. That is, in order for this to work, the static shape padding and
         # truncation must happen directly in the model `forward` function
 
-        num_processed_tokens = (
-            0
-            if past_key_values is None
-            or len(past_key_values.value_cache) == 0
-            or past_key_values.value_cache[0] == []
-            else past_key_values.value_cache[0].shape[-2]
-        )
+        # Handle both old and new DynamicCache API for transformers compatibility
+        num_processed_tokens = 0
+        if past_key_values is not None:
+            # Try the new API first (transformers>=4.54.0)
+            if hasattr(past_key_values, 'get_seq_length'):
+                seq_length = past_key_values.get_seq_length()
+                num_processed_tokens = seq_length if seq_length > 0 else 0
+            # Fall back to old API (transformers<4.54.0) 
+            elif hasattr(past_key_values, 'value_cache') and len(past_key_values.value_cache) > 0:
+                if past_key_values.value_cache[0] is not None and len(past_key_values.value_cache[0]) > 0:
+                    num_processed_tokens = past_key_values.value_cache[0].shape[-2]
+            # Handle legacy cache format (list of tensors)
+            elif isinstance(past_key_values, (list, tuple)) and len(past_key_values) > 0:
+                if past_key_values[1] is not None:  # value tensor is at index 1
+                    num_processed_tokens = past_key_values[1].shape[-2]
         return {
             "input_ids": input_ids[:, num_processed_tokens:],
             "past_key_values": past_key_values,
@@ -416,8 +424,17 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
 
         # Convert KV Cache outputs into HF DynamicCache
         past_key_values = DynamicCache()
-        past_key_values.key_cache = global_outputs["past_key_values"][::2]
-        past_key_values.value_cache = global_outputs["past_key_values"][1::2]
+        # Use proper DynamicCache API for transformers compatibility
+        try:
+            # Try new API first (transformers>=4.54.0)
+            for i in range(0, len(global_outputs["past_key_values"]), 2):
+                key_tensor = global_outputs["past_key_values"][i]
+                value_tensor = global_outputs["past_key_values"][i + 1]
+                past_key_values.update(key_tensor, value_tensor, i // 2)
+        except (AttributeError, TypeError):
+            # Fall back to direct assignment for older versions
+            past_key_values.key_cache = global_outputs["past_key_values"][::2]
+            past_key_values.value_cache = global_outputs["past_key_values"][1::2]
         return CausalLMOutputWithPast(logits=logits, past_key_values=past_key_values)
 
     def prefill(

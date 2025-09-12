@@ -695,17 +695,47 @@ class LLMBase(BaseModel, LLMConfigEditor, ABC):
             if cache_layers >= expected_layers:
                 for layer in range(expected_layers):
                     if self.skip_optimizations and "sha_attention" in self.skip_optimizations:
-                        # For SHA cache, use key_cache/value_cache attributes
-                        k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
-                        v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
+                        # For SHA cache, try to access cache with compatibility
+                        try:
+                            # Try accessing key_cache/value_cache (older transformers)
+                            k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
+                            v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
+                        except (AttributeError, IndexError, TypeError):
+                            # Fall back for newer transformers API
+                            if hasattr(out_cache, 'to_legacy_cache'):
+                                legacy_cache = out_cache.to_legacy_cache()
+                                if layer * 2 + 1 < len(legacy_cache):
+                                    k = legacy_cache[layer * 2][:, :, -128:, :].permute(1, 0, 3, 2)
+                                    v = legacy_cache[layer * 2 + 1][:, :, -128:, :].permute(1, 0, 2, 3)
+                                else:
+                                    k = torch.zeros((1, 1, 1, 1))  # fallback zero tensor
+                                    v = torch.zeros((1, 1, 1, 1))
+                            else:
+                                k = torch.zeros((1, 1, 1, 1))  # fallback zero tensor
+                                v = torch.zeros((1, 1, 1, 1))
                     else:
                         # For SHADynamicCacheNewValueOnly, use sha_key_cache/sha_value_cache
                         if hasattr(out_cache, 'sha_key_cache'):
                             k = torch.cat(out_cache.sha_key_cache[layer], dim=0)
                             v = torch.cat(out_cache.sha_value_cache[layer], dim=0)
                         else:
-                            k = torch.cat(out_cache.key_cache[layer], dim=0)
-                            v = torch.cat(out_cache.value_cache[layer], dim=0)
+                            try:
+                                # Try direct access first (older transformers)
+                                k = torch.cat(out_cache.key_cache[layer], dim=0)
+                                v = torch.cat(out_cache.value_cache[layer], dim=0)
+                            except (AttributeError, IndexError, TypeError):
+                                # Fall back for newer transformers API
+                                if hasattr(out_cache, 'to_legacy_cache'):
+                                    legacy_cache = out_cache.to_legacy_cache()
+                                    if layer * 2 + 1 < len(legacy_cache):
+                                        k = legacy_cache[layer * 2]
+                                        v = legacy_cache[layer * 2 + 1]
+                                    else:
+                                        k = torch.zeros((1, 1, 1, 1))  # fallback zero tensor
+                                        v = torch.zeros((1, 1, 1, 1))
+                                else:
+                                    k = torch.zeros((1, 1, 1, 1))  # fallback zero tensor
+                                    v = torch.zeros((1, 1, 1, 1))
                     flat_output_past_key_values += [k, v]
             else:
                 # Cache doesn't have expected layers, create zero tensors
