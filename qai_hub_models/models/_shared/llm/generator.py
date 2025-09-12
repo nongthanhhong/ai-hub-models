@@ -482,6 +482,7 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                             from qai_hub_models.utils.onnx_helpers import mock_torch_onnx_inference
                             import onnxruntime as ort
                             import os
+                            import glob
                             
                             if hasattr(model, 'quant_sim') and hasattr(model.quant_sim, 'session'):
                                 session = model.quant_sim.session
@@ -496,7 +497,6 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                                     print("Attempting direct ONNX inference from checkpoint...")
                                     
                                     # Look for any available ONNX file
-                                    import glob
                                     onnx_files = glob.glob(os.path.join(checkpoint_dir, "model_seqlen*_cl*.onnx"))
                                     
                                     if onnx_files:
@@ -519,8 +519,7 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                                         
                                         outputs = session.run(None, input_dict)
                                         
-                                        # Convert back to torch tensors
-                                        import torch
+                                        # Convert back to torch tensors (use module-level torch import)
                                         local_outputs = tuple(torch.from_numpy(out).to(input_ids_slice.device) for out in outputs)
                                         
                                         self.combine_local_and_global_outputs(
