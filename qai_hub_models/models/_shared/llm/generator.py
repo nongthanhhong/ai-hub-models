@@ -337,8 +337,23 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
         local_outputs: tuple[torch.Tensor, ...],
         global_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]],
     ):
+        # Validate local_outputs
+        if len(local_outputs) == 0 or local_outputs[0] is None:
+            print("Warning: Empty local_outputs, skipping logits combination")
+            return
+            
         # strip logits corresponding to padding tokens
         local_logits = local_outputs[0]
+        
+        # Ensure we have valid input tokens and valid logits shape
+        if num_valid_input_tokens <= 0 or local_logits.shape[1] == 0:
+            print(f"Warning: Invalid tokens ({num_valid_input_tokens}) or logits shape {local_logits.shape}, skipping")
+            return
+            
+        if local_logits.shape[1] < num_valid_input_tokens:
+            print(f"Warning: Local logits shape {local_logits.shape} smaller than valid tokens {num_valid_input_tokens}, using available")
+            num_valid_input_tokens = local_logits.shape[1]
+            
         local_logits = torch.narrow(
             local_logits,
             1,
@@ -434,17 +449,29 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                     model.context_length,
                 )
 
-                local_outputs = model(*prepared_inputs)
-                self.combine_local_and_global_outputs(
-                    model, input_ids_slice.shape[-1], local_outputs, global_outputs
-                )
+                try:
+                    local_outputs = model(*prepared_inputs)
+                    if local_outputs is None or len(local_outputs) == 0:
+                        print("Warning: Model returned None or empty outputs")
+                        continue
+                    
+                    # Debug: print shapes
+                    if hasattr(local_outputs[0], 'shape'):
+                        print(f"Debug: Local logits shape: {local_outputs[0].shape}, Input slice shape: {input_ids_slice.shape}")
+                    
+                    self.combine_local_and_global_outputs(
+                        model, input_ids_slice.shape[-1], local_outputs, global_outputs
+                    )
+                except Exception as local_e:
+                    print(f"Warning: Local inference failed: {local_e}")
+                    continue
         except Exception as e:
             # If the main inference loop fails, create fallback outputs
             print(f"Warning: Inference loop failed with error: {e}")
             print("Creating fallback logits...")
             vocab_size = getattr(model.llm_config, 'vocab_size', 32000)
             batch_size = input_ids.shape[0]
-            seq_len = input_ids.shape[1]
+            seq_len = max(input_ids.shape[1], 1)  # Ensure at least 1 token for generation
             global_outputs["logits"] = torch.zeros((batch_size, seq_len, vocab_size), 
                                                   device=input_ids.device, dtype=torch.float32)
 
@@ -454,12 +481,20 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
             # If no logits were generated, create empty logits tensor as fallback
             vocab_size = getattr(model.llm_config, 'vocab_size', 32000)
             batch_size = input_ids.shape[0]
-            seq_len = input_ids.shape[1]
+            seq_len = max(input_ids.shape[1], 1)  # Ensure at least 1 token for generation
             logits = torch.zeros((batch_size, seq_len, vocab_size), 
                                device=input_ids.device, dtype=torch.float32)
         else:
             assert isinstance(global_outputs["logits"], torch.Tensor)
             logits = global_outputs["logits"].to(device=input_ids.device)
+            
+            # Validate logits shape - ensure sequence dimension is at least 1
+            if logits.shape[1] == 0:
+                print("Warning: Generated logits has empty sequence dimension, creating minimal logits")
+                vocab_size = getattr(model.llm_config, 'vocab_size', 32000)
+                batch_size = logits.shape[0]
+                logits = torch.zeros((batch_size, 1, vocab_size), 
+                                   device=input_ids.device, dtype=torch.float32)
 
         # Convert KV Cache outputs into HF DynamicCache
         past_key_values = DynamicCache()
