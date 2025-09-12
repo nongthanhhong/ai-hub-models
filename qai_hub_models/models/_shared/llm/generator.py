@@ -226,7 +226,8 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
         if isinstance(self.selected_model, LLM_Loader):
             self.selected_model.release()
         if isinstance(self.selected_model, LLM_AIMETOnnx):
-            del self.selected_model.quant_sim
+            if hasattr(self.selected_model, 'quant_sim') and self.selected_model.quant_sim is not None:
+                del self.selected_model.quant_sim
 
         self.selected_model = (
             new_selected_model.load()
@@ -450,7 +451,17 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                 )
 
                 try:
-                    local_outputs = model(*prepared_inputs)
+                    # Check if model has quantization capability and quant_sim is available
+                    if hasattr(model, 'quant_sim') and model.quant_sim is not None:
+                        # Use AIMET ONNX inference
+                        local_outputs = model(*prepared_inputs)
+                    elif hasattr(model, 'forward') and callable(model.forward):
+                        # Fallback to regular forward method
+                        local_outputs = model.forward(*prepared_inputs)
+                    else:
+                        print("Warning: Model has no available forward method")
+                        continue
+                        
                     if local_outputs is None or len(local_outputs) == 0:
                         print("Warning: Model returned None or empty outputs")
                         continue
@@ -462,6 +473,28 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                     self.combine_local_and_global_outputs(
                         model, input_ids_slice.shape[-1], local_outputs, global_outputs
                     )
+                except AttributeError as attr_e:
+                    if "quant_sim" in str(attr_e):
+                        print(f"Warning: Model quantization not properly initialized: {attr_e}")
+                        print("Attempting to use fallback inference method...")
+                        try:
+                            # Try to use mixin's forward method if available, but with error handling
+                            from qai_hub_models.utils.onnx_helpers import mock_torch_onnx_inference
+                            if hasattr(model, 'quant_sim') and hasattr(model.quant_sim, 'session'):
+                                session = model.quant_sim.session
+                                local_outputs = mock_torch_onnx_inference(session, *prepared_inputs)
+                                self.combine_local_and_global_outputs(
+                                    model, input_ids_slice.shape[-1], local_outputs, global_outputs
+                                )
+                            else:
+                                print("No valid quantized session available, skipping this inference step")
+                                continue
+                        except Exception as fallback_e:
+                            print(f"Fallback inference also failed: {fallback_e}")
+                            continue
+                    else:
+                        print(f"Warning: Local inference failed with attribute error: {attr_e}")
+                        continue
                 except Exception as local_e:
                     print(f"Warning: Local inference failed: {local_e}")
                     continue

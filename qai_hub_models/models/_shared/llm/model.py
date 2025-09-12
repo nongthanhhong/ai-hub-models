@@ -1134,7 +1134,9 @@ class LLM_AIMETOnnx(AIMETOnnxQuantizableMixin, LLMConfigEditor, BaseModel, ABC):
         )
         # If the sequence length is ARs to be exported then export model as part of QuantSim.
         print(f"Creating a checkpoint of quantized model at {output_checkpoint}.")
-        assert self.quant_sim is not None
+        if not hasattr(self, 'quant_sim') or self.quant_sim is None:
+            raise RuntimeError("QuantSim model is not available for export. Make sure the model was properly quantized.")
+        
         self.quant_sim.export(str(output_checkpoint), "model")
         del self.quant_sim
         # Save ONNX model and data file in the checkpoint.
