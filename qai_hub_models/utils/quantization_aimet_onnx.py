@@ -117,13 +117,19 @@ class AIMETOnnxQuantizableMixin(PretrainedHubModelProtocol):
         quant_sim: QuantSimOnnx | None,
     ):
         self.quant_sim = quant_sim
+        print(f"AIMETOnnxQuantizableMixin.__init__: quant_sim is {'None' if quant_sim is None else 'available'}")
         if self.quant_sim is not None:
-            self.input_names = [
-                input.name for input in self.quant_sim.session.get_inputs()
-            ]
-            self.output_names = [
-                output.name for output in self.quant_sim.session.get_outputs()
-            ]
+            try:
+                self.input_names = [
+                    input.name for input in self.quant_sim.session.get_inputs()
+                ]
+                self.output_names = [
+                    output.name for output in self.quant_sim.session.get_outputs()
+                ]
+                print(f"QuantSim session initialized with {len(self.input_names)} inputs and {len(self.output_names)} outputs")
+            except Exception as e:
+                print(f"Failed to initialize QuantSim session: {e}")
+                self.quant_sim = None  # Reset to None if session initialization fails
 
     def convert_to_torchscript(
         self, input_spec: InputSpec | None = None, check_trace: bool = True

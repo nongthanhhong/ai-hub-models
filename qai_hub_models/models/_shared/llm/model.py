@@ -907,6 +907,7 @@ class LLM_AIMETOnnx(AIMETOnnxQuantizableMixin, LLMConfigEditor, BaseModel, ABC):
         self.context_length = context_length
         self.sequence_length = sequence_length
         self.host_device = host_device
+        self._checkpoint_path = checkpoint  # Store checkpoint path for fallback inference
 
         assert (
             tokenizer is not None and llm_config is not None
@@ -991,13 +992,38 @@ class LLM_AIMETOnnx(AIMETOnnxQuantizableMixin, LLMConfigEditor, BaseModel, ABC):
 
             if checkpoint is None:
                 onnx_file_exists = False
+                onnx_path = None
             else:
+                # Try to find ONNX file with specified sequence/context length
                 onnx_path = os.path.join(
                     checkpoint, f"model_seqlen{sequence_length}_cl{context_length}.onnx"
                 )
-                onnx_file_exists = os.path.exists(onnx_path) and os.path.exists(
-                    os.path.join(checkpoint, "model.data")
-                )
+                data_path = os.path.join(checkpoint, "model.data")
+                onnx_file_exists = os.path.exists(onnx_path) and os.path.exists(data_path)
+                
+                # If exact match not found, try to find any compatible ONNX file
+                if not onnx_file_exists:
+                    print(f"Exact ONNX file {onnx_path} not found, searching for alternatives...")
+                    
+                    # Look for available ONNX files in the checkpoint directory
+                    import glob
+                    available_onnx = glob.glob(os.path.join(checkpoint, "model_seqlen*_cl*.onnx"))
+                    
+                    if available_onnx:
+                        # Try to find one with matching context length
+                        compatible_files = [f for f in available_onnx if f"_cl{context_length}.onnx" in f]
+                        if compatible_files:
+                            onnx_path = compatible_files[0]  # Use first compatible file
+                            onnx_file_exists = os.path.exists(data_path)  # Check if data file exists
+                            print(f"Using compatible ONNX file: {onnx_path}")
+                        else:
+                            # Use any available ONNX file as fallback
+                            onnx_path = available_onnx[0]
+                            onnx_file_exists = os.path.exists(data_path)
+                            print(f"Using fallback ONNX file: {onnx_path}")
+                    else:
+                        print(f"No ONNX files found in {checkpoint}")
+                        onnx_file_exists = False
 
             if not onnx_file_exists:
                 if fp_model is None:
@@ -1028,8 +1054,14 @@ class LLM_AIMETOnnx(AIMETOnnxQuantizableMixin, LLMConfigEditor, BaseModel, ABC):
             # Deepcopy causes error on GPU.
             print()
             print("Creating a QuantSim model using AIMET ONNX.")
+            print(f"ONNX model loaded from: {onnx_path}")
             assert onnx_model is not None
-            quant_sim = cls.create_quantsim(onnx_model, host_device, precision)
+            try:
+                quant_sim = cls.create_quantsim(onnx_model, host_device, precision)
+                print("QuantSim created successfully")
+            except Exception as e:
+                print(f"Failed to create QuantSim: {e}")
+                raise
 
             # Cleanup the ONNX model that creates the QuantSim model
             del onnx_model

@@ -480,6 +480,9 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                         try:
                             # Try to use mixin's forward method if available, but with error handling
                             from qai_hub_models.utils.onnx_helpers import mock_torch_onnx_inference
+                            import onnxruntime as ort
+                            import os
+                            
                             if hasattr(model, 'quant_sim') and hasattr(model.quant_sim, 'session'):
                                 session = model.quant_sim.session
                                 local_outputs = mock_torch_onnx_inference(session, *prepared_inputs)
@@ -487,8 +490,48 @@ class LLM_Generator(GenerationMixin, torch.nn.Module):
                                     model, input_ids_slice.shape[-1], local_outputs, global_outputs
                                 )
                             else:
-                                print("No valid quantized session available, skipping this inference step")
-                                continue
+                                # Try to create ONNX session directly from checkpoint files
+                                checkpoint_dir = getattr(model, '_checkpoint_path', None)
+                                if checkpoint_dir and os.path.exists(checkpoint_dir):
+                                    print("Attempting direct ONNX inference from checkpoint...")
+                                    
+                                    # Look for any available ONNX file
+                                    import glob
+                                    onnx_files = glob.glob(os.path.join(checkpoint_dir, "model_seqlen*_cl*.onnx"))
+                                    
+                                    if onnx_files:
+                                        onnx_file = onnx_files[0]  # Use first available
+                                        print(f"Using ONNX file: {onnx_file}")
+                                        
+                                        # Create ONNX Runtime session
+                                        providers = ['CPUExecutionProvider']
+                                        if hasattr(model, 'host_device') and model.host_device.type == 'cuda':
+                                            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                                        
+                                        session = ort.InferenceSession(onnx_file, providers=providers)
+                                        
+                                        # Convert inputs to numpy and run inference
+                                        input_dict = {}
+                                        input_names = [inp.name for inp in session.get_inputs()]
+                                        for i, inp_name in enumerate(input_names):
+                                            if i < len(prepared_inputs):
+                                                input_dict[inp_name] = prepared_inputs[i].cpu().numpy()
+                                        
+                                        outputs = session.run(None, input_dict)
+                                        
+                                        # Convert back to torch tensors
+                                        import torch
+                                        local_outputs = tuple(torch.from_numpy(out).to(input_ids_slice.device) for out in outputs)
+                                        
+                                        self.combine_local_and_global_outputs(
+                                            model, input_ids_slice.shape[-1], local_outputs, global_outputs
+                                        )
+                                    else:
+                                        print("No ONNX files found in checkpoint directory, skipping this inference step")
+                                        continue
+                                else:
+                                    print("No valid checkpoint directory available, skipping this inference step")
+                                    continue
                         except Exception as fallback_e:
                             print(f"Fallback inference also failed: {fallback_e}")
                             continue
