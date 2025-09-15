@@ -176,14 +176,16 @@ def export_model(
     component_from_sub_component_names = {}
     input_encodings_path: str | None = None
 
-    # Modern approach: Use DLC runtime to avoid deprecated context binary linking
+    # Support both QNN_DLC and QNN_CONTEXT_BINARY as separate runtime options
+    hub_target_runtime = target_runtime
+    
+    # Add deprecated flag only for QNN_CONTEXT_BINARY with warning
     if target_runtime == TargetRuntime.QNN_CONTEXT_BINARY:
-        # Use DLC as the hub target runtime for compilation, then convert to context binary if needed
-        hub_target_runtime = TargetRuntime.QNN_DLC
-        # Note: Removed deprecated --qnn_bin_conversion_via_model_library flag
-        # DLC linking is more reliable and avoids the deprecation warning
-    else:
-        hub_target_runtime = target_runtime
+        compile_options += " --qnn_bin_conversion_via_model_library"
+        print("⚠️  WARNING: Using deprecated QNN context binary runtime.")
+        print("   Consider using --target-runtime qnn_dlc for the modern approach without deprecation warnings.")
+        print("   Both runtimes use the same QNN inference engine with equivalent performance.")
+        print("")
 
     for instantiation_name, seq_len in instantiations:
         full_name = f"{model_name}_{instantiation_name}"
@@ -328,7 +330,6 @@ def export_model(
         link_job = hub.submit_link_job(
             models,  # type: ignore[arg-type]
             name=full_name,
-            device=hub_device,
             options=model_link_options,
         )
         if synchronous:
