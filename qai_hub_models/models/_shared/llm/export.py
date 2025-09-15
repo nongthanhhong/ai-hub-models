@@ -176,19 +176,14 @@ def export_model(
     component_from_sub_component_names = {}
     input_encodings_path: str | None = None
 
-    # # Target QNN DLC (modern approach - replaces deprecated context binary linking)
-    # if target_runtime == TargetRuntime.QNN_CONTEXT_BINARY:
-    #     # Use DLC as the hub target runtime for compilation, then convert to context binary if needed
-    #     hub_target_runtime = TargetRuntime.QNN_DLC
-    #     # Note: Removed deprecated --qnn_bin_conversion_via_model_library flag
-    #     # DLC linking is more reliable and avoids the deprecation warning
-    # else:
-    #     hub_target_runtime = target_runtime
-    
-    
-    # Target QNN context binaries
-    hub_target_runtime = TargetRuntime.QNN_CONTEXT_BINARY
-    compile_options += " --qnn_bin_conversion_via_model_library"
+    # Modern approach: Use DLC runtime to avoid deprecated context binary linking
+    if target_runtime == TargetRuntime.QNN_CONTEXT_BINARY:
+        # Use DLC as the hub target runtime for compilation, then convert to context binary if needed
+        hub_target_runtime = TargetRuntime.QNN_DLC
+        # Note: Removed deprecated --qnn_bin_conversion_via_model_library flag
+        # DLC linking is more reliable and avoids the deprecation warning
+    else:
+        hub_target_runtime = target_runtime
 
     for instantiation_name, seq_len in instantiations:
         full_name = f"{model_name}_{instantiation_name}"
@@ -333,7 +328,7 @@ def export_model(
         link_job = hub.submit_link_job(
             models,  # type: ignore[arg-type]
             name=full_name,
-            # device=hub_device,
+            device=hub_device,
             options=model_link_options,
         )
         if synchronous:
@@ -446,8 +441,9 @@ def export_model(
         for component_name, link_job in link_jobs.items():
             target_model = link_job.get_target_model()
             assert target_model is not None
+            file_extension = target_runtime.file_extension
             target_model.download(
-                str(output_path / f"{model_name}_{component_name}.bin")
+                str(output_path / f"{model_name}_{component_name}.{file_extension}")
             )
 
     # 6. Summarize the results from profiling and inference
