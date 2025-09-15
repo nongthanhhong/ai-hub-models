@@ -328,6 +328,7 @@ def export_model(
         link_job = hub.submit_link_job(
             models,  # type: ignore[arg-type]
             name=full_name,
+            device=hub_device,
             options=model_link_options,
         )
         if synchronous:
