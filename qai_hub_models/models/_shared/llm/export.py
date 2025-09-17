@@ -336,7 +336,7 @@ def export_model(
             link_job.wait()
         link_jobs[component_name] = link_job
 
-    # 3. Profile the model assets on real devices
+    # 3. Profile the model assets on real devices (individual graphs within linked models)
     profile_jobs: dict[str, hub.client.ProfileJob] = {}
     if not skip_profiling:
         for instantiation_name, seq_len in instantiations:
@@ -350,24 +350,24 @@ def export_model(
                     + f" --qnn_options context_enable_graphs={graph_name}"
                 )
                 print(
-                    f"Profiling model {instantiation_name} {sub_component_name} on a hosted device."
+                    f"Profiling linked model graph {graph_name} ({sub_component_name}) on a hosted device."
                 )
                 link_job = link_jobs[component_name]
                 if not link_job.wait().success:
                     raise RuntimeError(
                         f"Link job {link_job.job_id} failed. Please go to {link_job.url} and consult the error log."
                     )
-                full_name = f"{model_name}_{sub_component_name}"
+                full_name = f"{model_name}_{sub_component_name}_from_linked"
                 if QAIRTVersion.HUB_FLAG not in profile_options:
                     if target_runtime == TargetRuntime.PRECOMPILED_QNN_ONNX:
                         profile_options += (
                             f" {target_runtime.default_qairt_version.hub_option}"
                         )
                 submitted_profile_job = hub.submit_profile_job(
-                    model=link_job.get_target_model(),
+                    model=link_job.get_target_model(),  # Uses linked model
                     device=hub_device,
                     name=full_name,
-                    options=profile_options,
+                    options=profile_options,  # But targets specific graph within it
                 )
                 if synchronous:
                     submitted_profile_job.wait()
