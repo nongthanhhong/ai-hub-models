@@ -327,10 +327,16 @@ def export_model(
             hub_target_runtime, link_options
         )
 
+        # For QNN dlc generation, hub requires a device for link jobs.
+        # For QNN Context Binary, device is not required and can be omitted.
+        link_kwargs: dict[str, Any] = {}
+        if target_runtime == TargetRuntime.QNN_DLC:
+            link_kwargs["device"] = hub_device
         link_job = hub.submit_link_job(
             models,  # type: ignore[arg-type]
             name=full_name,
             options=model_link_options,
+            **link_kwargs,
         )
         if synchronous:
             link_job.wait()
