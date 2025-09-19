@@ -1,0 +1,413 @@
+
+# ---------------------------------------------------------------------
+# Copyright (c) 2025 Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
+# ---------------------------------------------------------------------
+
+from __future__ import annotations
+
+import math
+from typing import Any, Callable, Optional, cast
+
+import torch
+from torch import nn
+from transformers.cache_utils import Cache
+# RMSNorm import removed - now using Exaone4RMSNorm
+
+# Import EXAONE4 classes and raise error if not available
+try:
+    from transformers.models.exaone4.modeling_exaone4 import (
+        Exaone4ForCausalLM,
+        Exaone4MLP,
+        Exaone4Attention,
+        Exaone4DecoderLayer,
+        Exaone4RMSNorm,
+    )
+except ImportError as e:
+    raise ImportError(
+        "EXAONE4 model classes could not be imported. "
+        "Please ensure that 'transformers' with EXAONE4 support is installed."
+    ) from e
+
+
+# Adapted from transformers.models.llama.modeling_llama.repeat_kv
+def repeat_kv(
+    hidden_states: torch.Tensor | list[torch.Tensor], n_rep: int
+) -> torch.Tensor | list[torch.Tensor]:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    if isinstance(hidden_states, list):
+        return [head for head in hidden_states for _ in range(n_rep)]
+
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+def _apply_rope_single(
+    x: torch.Tensor, rope_vals: tuple[torch.Tensor, torch.Tensor]
+) -> torch.Tensor:
+    """
+    Apply RoPE to a single tensor
+    """
+    rope_real = rope_vals[0]  # shape should be 1, 1, seqlen, head_dim/2
+    rope_im = rope_vals[1]  # shape should be 1, 1, seqlen, head_dim/2
+
+    x_real = x[:, :, :, : x.shape[-1] // 2]  # extract first half elements
+    x_im = x[:, :, :, x.shape[-1] // 2 :]  # extract second half elements
+
+    x_prod_real = x_real * rope_real - x_im * rope_im
+    x_prod_im = x_real * rope_im + x_im * rope_real
+
+    x = torch.cat((x_prod_real, x_prod_im), dim=3).view(*x.shape)
+    return x
+
+
+def QcExaone4_apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: Optional[list[int]] = None,
+    unsqueeze_dim: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply rotary position embedding for EXAONE4"""
+    query_states = _apply_rope_single(q, (cos, sin))
+    key_states = _apply_rope_single(k, (cos, sin))
+    return query_states, key_states
+
+
+
+class QCExaone4Attention(Exaone4Attention):
+    """
+    Optimized Attention module for EXAONE4 with Split-Head Attention and convolutions
+    """
+
+    def __init__(self, config, layer_idx: int):
+        # Initialize parent class first to get all attributes
+        super().__init__(config, layer_idx)
+
+        # Override q_norm and k_norm with optimized versions
+        self.q_norm = Exaone4RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = Exaone4RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+
+    def prepare_conv(self):
+        """Prepare convolution layers for Split-Head Attention optimization"""
+        if not hasattr(self, "q_proj_conv"):
+            self.q_proj_conv = nn.Conv2d(
+                self.hidden_size, self.num_attention_heads * self.head_dim, 1, bias=False
+            )
+            self.k_proj_conv = nn.Conv2d(
+                self.hidden_size,
+                self.num_key_value_heads * self.head_dim,
+                1,
+                bias=False,
+            )
+            self.v_proj_conv = nn.Conv2d(
+                self.hidden_size,
+                self.num_key_value_heads * self.head_dim,
+                1,
+                bias=False,
+            )
+            self.o_proj_conv = nn.Conv2d(
+                self.num_attention_heads * self.head_dim, self.hidden_size, 1, bias=False
+            )
+
+            # Copy weights from linear layers to conv layers
+            self._copy_linear_to_conv_weights()
+
+    def _copy_linear_to_conv_weights(self):
+        """Copy weights from linear layers to conv layers"""
+        self.q_proj_conv.weight.data = self.q_proj.weight.data.unsqueeze(-1).unsqueeze(-1)
+        self.k_proj_conv.weight.data = self.k_proj.weight.data.unsqueeze(-1).unsqueeze(-1)
+        self.v_proj_conv.weight.data = self.v_proj.weight.data.unsqueeze(-1).unsqueeze(-1)
+        self.o_proj_conv.weight.data = self.o_proj.weight.data.unsqueeze(-1).unsqueeze(-1)
+
+    def prepare_sha(self):
+        """Prepare Split-Head Attention optimization"""
+        # Ensure conv preparation is done first
+        if not (
+            hasattr(self, "q_proj_conv")
+            and hasattr(self, "k_proj_conv")
+            and hasattr(self, "o_proj_conv")
+            and hasattr(self, "v_proj_conv")
+        ):
+            raise RuntimeError(
+                "The method 'prepare_sha' cannot be run on model without running 'prepare_conv' first."
+            )
+
+        if not hasattr(self, "forward_mha"):
+            # Get attributes from config for transformers compatibility
+            hidden_size = self.config.hidden_size
+            num_heads = self.config.num_attention_heads
+            num_key_value_heads = self.config.num_key_value_heads
+
+            # Create SHA projection layers (one per attention head)
+            self.q_proj_sha = nn.ModuleList([
+                nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                for _ in range(num_heads)
+            ])
+            self.k_proj_sha = nn.ModuleList([
+                nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                for _ in range(num_key_value_heads)
+            ])
+            self.v_proj_sha = nn.ModuleList([
+                nn.Conv2d(hidden_size, self.head_dim, 1, bias=False)
+                for _ in range(num_key_value_heads)
+            ])
+
+            # Store original forward method and replace with SHA version
+            self.forward_mha = self.forward
+            self.forward = self.forward_sha
+
+        # Get attributes from config for transformers compatibility
+        num_heads = self.config.num_attention_heads
+        num_key_value_heads = self.config.num_key_value_heads
+
+        # Copy weights from conv layers to SHA layers
+        for i in range(num_heads):
+            self.q_proj_sha[i].weight.data.copy_(
+                self.q_proj_conv.weight[i * self.head_dim : (i + 1) * self.head_dim, :]
+            )
+
+        for i in range(num_key_value_heads):
+            self.k_proj_sha[i].weight.data.copy_(
+                self.k_proj_conv.weight[i * self.head_dim : (i + 1) * self.head_dim, :]
+            )
+            self.v_proj_sha[i].weight.data.copy_(
+                self.v_proj_conv.weight[i * self.head_dim : (i + 1) * self.head_dim, :]
+            )
+
+        # Remove conv layers to save memory
+        del self.q_proj_conv
+        del self.k_proj_conv
+        del self.v_proj_conv
+
+    def forward_sha(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Cache] = None,
+        past_key_values: Optional[Cache] = None,  # For transformers 4.54.0+ compatibility
+        cache_position: Optional[torch.LongTensor] = None,
+        output_attentions: bool = False,
+        **kwargs,
+    ) -> tuple[torch.Tensor, Optional[list[torch.Tensor]]]:
+        """Split-Head Attention forward pass"""
+        # Handle both past_key_value and past_key_values for transformers compatibility
+        if past_key_values is not None and past_key_value is None:
+            past_key_value = past_key_values
+
+        bsz, q_len, _ = hidden_states.size()
+
+        # Reshape for Conv2d following SHALlamaAttention pattern: [B, S, 1, H] -> [B, H, S, 1]
+        hidden_states = torch.reshape(hidden_states, (bsz, -1, 1, self.config.hidden_size))
+        hidden_states = hidden_states.transpose(1, 3)  # [B, H, S, 1]
+
+        # Apply SHA projections (one per head)
+        query_states = [
+            q_proj(hidden_states).permute(0, 2, 3, 1) for q_proj in self.q_proj_sha
+        ]
+        key_states = [
+            k_proj(hidden_states).permute(0, 2, 3, 1) for k_proj in self.k_proj_sha
+        ]
+        value_states = [
+            v_proj(hidden_states).permute(0, 2, 3, 1) for v_proj in self.v_proj_sha
+        ]
+
+        # Apply QK-norm (EXAONE4 specific)
+        query_states = [self.q_norm(q) for q in query_states]
+        key_states = [self.k_norm(k) for k in key_states]
+        # Apply RoPE - EXAONE4 always provides position_embeddings as required parameter
+        # (unlike Llama3 which has fallback logic for when position_embeddings can be None)
+        cos, sin = position_embeddings
+        query_states = [_apply_rope_single(q, (cos, sin)) for q in query_states]
+        key_states = [_apply_rope_single(k, (cos, sin)) for k in key_states]
+
+        # Handle past key/values (fixed to work like Llama3)
+        if past_key_value is not None:
+            # Get past key/value states from cache
+            past_key = past_key_value.key_cache[self.layer_idx] if hasattr(past_key_value, 'key_cache') else []
+            past_value = past_key_value.value_cache[self.layer_idx] if hasattr(past_key_value, 'value_cache') else []
+            
+            # Update cache with current states (follow Llama3 approach exactly)
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            transposed_key_states = [
+                key_state.transpose(2, 3) for key_state in key_states
+            ]
+            # Technically, this isn't what Cache expects. It stores tensors, not lists
+            # of tensors.
+            past_key_value.update(
+                transposed_key_states,
+                value_states,
+                self.layer_idx,
+                cache_kwargs,  # pyright: ignore[reportArgumentType]
+            )
+            
+            # Now concatenate the key/value states (exactly like Llama3)
+            key_states = [
+                torch.cat([pk, k.transpose(2, 3)], dim=3)
+                for pk, k in zip(past_key, key_states)
+            ]
+            value_states = [
+                torch.cat([pv, v], dim=2) for pv, v in zip(past_value, value_states)
+            ]
+
+        # Calculate sequence lengths for attention (after concatenation)
+        # Following Llama3 approach: values are concatenated along dim=2
+        kv_seq_len = value_states[0].shape[2]
+
+        # Repeat KV heads for GQA
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        # Compute attention weights
+        attn_weights = [
+            torch.matmul(q, k) / math.sqrt(self.head_dim)
+            for q, k in zip(query_states, key_states)
+        ]
+
+        # Apply attention mask if provided
+        if attention_mask is not None:
+            attn_weights = [aw + attention_mask for aw in attn_weights]
+
+        # Apply softmax with fp32 precision
+        attn_weights = [
+            torch.nn.functional.softmax(aw, dim=-1, dtype=torch.float32).to(hidden_states.dtype)
+            for aw in attn_weights
+        ]
+
+        # Compute attention output
+        attn_output = [torch.matmul(aw, v) for aw, v in zip(attn_weights, value_states)]
+
+        # Concatenate heads: [B, 1, S, D] * num_heads -> [B, 1, S, H]
+        attn_output = torch.cat(attn_output, dim=-1)
+
+        # Apply output projection: [B, 1, S, H] -> [B, H, 1, S] for Conv2d
+        attn_output = attn_output.permute(0, 3, 1, 2)
+        attn_output = self.o_proj_conv(attn_output)
+        attn_output = attn_output.transpose(1, 3)  # [B, S, 1, H]
+        attn_output = attn_output.reshape(bsz, q_len, self.config.hidden_size)
+
+        # Return attention weights if requested (for consistency with other implementations)
+        attn_weights_return = attn_weights if output_attentions else None
+
+        return attn_output, attn_weights_return
+
+class ConvInplaceLinear(torch.nn.Conv2d):
+    """Convert Linear layer to Conv2d in-place"""
+
+    def __init__(self, module):
+        assert isinstance(module, torch.nn.Linear)
+        weight, bias = module.weight, module.bias
+        self.out_features, self.in_features = weight.shape
+
+        super().__init__(
+            self.in_features,
+            self.out_features,
+            1,
+            dtype=module.weight.dtype,
+            bias=True if bias is not None else False,
+        )
+
+        self.weight.data.copy_(weight.data[:, :, None, None])
+        if bias is not None:
+            self.bias.data.copy_(bias.data)
+        self.to(module.weight.data.device)
+
+    def forward(self, x: torch.Tensor, scale: float = 1.0):
+        ndim = x.ndim
+        if ndim == 2:
+            x = (
+                x.unsqueeze(0).unsqueeze(-1).permute(0, 2, 3, 1)
+            )  # (emb_dim, C) -> (1, C, 1, emb_dim)
+        elif ndim == 3:
+            x = x.unsqueeze(-1).permute(
+                0, 2, 3, 1
+            )  # (B, emb_dim, C) -> (B, C, 1, emb_dim)
+        elif ndim == 4:
+            x = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
+        else:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} could not handle input with shape {x.shape}"
+            )
+
+        x = super().forward(x)
+
+        if ndim == 2:
+            return (
+                x.permute(0, 3, 1, 2).squeeze(-1).squeeze(0)
+            )  # (1, C, 1, emb_dim) -> (emb_dim, C)
+        elif ndim == 3:
+            return x.permute(0, 3, 1, 2).squeeze(
+                -1
+            )  # (B, C, 1, emb_dim) -> (B, emb_dim, C)
+        elif ndim == 4:
+            x = x.permute(0, 2, 3, 1)  # (B, C, H, W) -> (B, H, W, C)
+        return x
+
+
+class QCExaone4MLP(Exaone4MLP):
+    """
+    Optimized MLP for EXAONE4
+    """
+
+    def __init__(self, config):
+        # Initialize with parent class - EXAONE4 MLP uses bias=False and ACT2FN[config.hidden_act]
+        super().__init__(config)
+
+    def prepare_conv(self):
+        """Convert Linear layers to Conv2d in-place for optimization"""
+        if isinstance(self.gate_proj, nn.Linear):
+            self.gate_proj = ConvInplaceLinear(self.gate_proj)  # type: ignore[has-type]
+        if isinstance(self.up_proj, nn.Linear):
+            self.up_proj = ConvInplaceLinear(self.up_proj)  # type: ignore[has-type]
+        if isinstance(self.down_proj, nn.Linear):
+            self.down_proj = ConvInplaceLinear(self.down_proj)  # type: ignore[has-type]
+
+
+class QCExaone4ForCausalLM(Exaone4ForCausalLM):
+    """
+    Optimized EXAONE4 model for causal language modeling
+    """
+
+    def __init__(self, config):
+        # Initialize with parent class - EXAONE4 lm_head uses bias=False
+        super().__init__(config)
+
+    def prepare_conv(self):
+        """Convert lm_head Linear layer to Conv2d in-place for optimization"""
+        if hasattr(self, 'lm_head') and isinstance(self.lm_head, nn.Linear):
+            self.lm_head = ConvInplaceLinear(self.lm_head)  # type: ignore[has-type]
+
+
+class QCExaone4DecoderLayer(Exaone4DecoderLayer):
+    """
+    Optimized EXAONE4 decoder layer with QK-Reorder-Norm
+    """
+
+    def __init__(self, config, layer_idx: int):
+        # Initialize with parent class, then replace components with optimized versions
+        super().__init__(config, layer_idx)
+
+        # Replace with optimized components
+        self.self_attn = QCExaone4Attention(config=config, layer_idx=layer_idx)
+        self.mlp = QCExaone4MLP(config)
+
+        # Note: RMSNorm is optimized globally via monkey patch, so we keep the original instances
+
+    def prepare_conv(self):
+        """Prepare convolution optimizations for the layer"""
+        self.self_attn.prepare_conv()
+        self.mlp.prepare_conv()
+
+    def prepare_sha(self):
+        """Prepare Split-Head Attention optimizations"""
+        self.self_attn.prepare_sha()

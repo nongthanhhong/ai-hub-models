@@ -1,0 +1,77 @@
+name: EXAONE-4.0-1.2B
+id: exaone4_1_2b
+status: public
+headline: State-of-the-art hybrid reasoning language model with advanced multilingual capabilities and tool use.
+domain: Generative AI
+description: EXAONE 4.0 is a cutting-edge large language model that integrates both non-reasoning and reasoning modes to deliver excellent usability and advanced reasoning abilities. The model is quantized to w4 (4-bit weights) and part of the model is quantized to w8 (8-bit weights) making it suitable for on-device deployment. Features include agentic tool use, multilingual support (English, Korean, Spanish), and hybrid attention with QK-Reorder-Norm architecture. For Prompt and output length specified below, the time to first token is EXAONE-PromptProcessor-Quantized's latency and average time per addition token is EXAONE-TokenGenerator-Quantized's latency.
+use_case: Text Generation
+tags:
+- llm
+- generative-ai
+- reasoning
+- multilingual
+- tool-use
+- agent
+research_paper: https://arxiv.org/abs/2507.11407
+research_paper_title: 'EXAONE 4.0: Unified Large Language Models Integrating Non-reasoning and Reasoning Modes'
+license: https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B/blob/main/LICENSE
+source_repo: https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B/
+technical_details:
+  Input sequence length for Prompt Processor: 128
+  Context length: 65536
+  Precision: w4 + w8 (few layers) + fp16 activations
+  Num of key-value heads: 8
+  Num of attention heads: 32
+  Head dimension: 64
+  Hidden size: 2048
+  Intermediate size: 4096
+  Vocab size: 102400
+  Model-1 (Prompt Processor): EXAONE-PromptProcessor-Quantized
+  Prompt processor input: 128 tokens + position embeddings + attention mask + KV cache inputs
+  Prompt processor output: 128 output tokens + KV cache outputs
+  Model-2 (Token Generator): EXAONE-TokenGenerator-Quantized
+  Token generator input: 1 input token + position embeddings + attention mask + KV cache inputs
+  Token generator output: 1 output token + KV cache outputs
+  Use: Initiate conversation with prompt-processor and then token generator for subsequent iterations.
+  Architecture: Hybrid attention with sliding window and full attention layers
+  QK-Reorder-Norm: Post-attention and post-feedforward layer normalization
+  RoPE: Rotary position embedding with llama3 scaling
+  Reasoning Mode: Supports <think> blocks for step-by-step reasoning
+  Tool Calling: Native support for function calling and tool execution
+  Minimum QNN SDK version required: 2.36.3
+  Supported languages: English, Korean, Spanish.
+  TTFT: Time To First Token is the time it takes to generate the first response token. This is expressed as a range because it varies based on the length of the prompt. The lower bound is for a short prompt (up to 128 tokens, i.e., one iteration of the prompt processor) and the upper bound is for a prompt using the full context length (65536 tokens).
+  Response Rate: Rate of response generation after the first response token.
+applicable_scenarios:
+- Dialogue
+- Content Generation
+- Customer Support
+- Reasoning Tasks
+- Math Problem Solving
+- Code Generation
+- Tool-assisted Tasks
+- Multilingual Communication
+- Educational Assistance
+related_models:
+- llama_v3_2_1b_instruct
+- llama_v3_2_3b_instruct
+- llama_v3_1_8b_instruct
+form_factors:
+- Phone
+- Tablet
+- Edge Device
+has_static_banner: true
+has_animated_banner: true
+license_type: exaone
+deploy_license: https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B/blob/main/LICENSE
+deploy_license_type: exaone
+dataset: []
+restrict_model_sharing: true
+model_type_llm: true
+llm_details:
+  call_to_action: View Readme
+  genie_compatible: true
+  reasoning_capable: true
+  tool_use_capable: true
+  multilingual_capable: true
+  devices: {}
