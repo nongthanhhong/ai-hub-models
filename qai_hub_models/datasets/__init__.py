@@ -105,6 +105,7 @@ _try_import_dataset(".stable_diffusion_calib", "StableDiffusionCalibDatasetContr
 _try_import_dataset(".celebahq", "CelebAHQDataset")
 _try_import_dataset(".wikitext", "WikiText")
 _try_import_dataset(".wikitext_ja", "WikiText_Japanese")
+_try_import_dataset(".wikitext_ko", "WikiText_Korean")
 _try_import_dataset(".tiny_mmlu", "TinyMMLU")
 _try_import_dataset(".mmlu", "MMLU")
 _try_import_dataset(".mmmlu", "MMMLU")
