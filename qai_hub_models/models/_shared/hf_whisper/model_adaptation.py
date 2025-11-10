@@ -127,7 +127,7 @@ class SHAAttention(nn.Module):
         hidden_states: torch.Tensor,
         past_key_value: Optional[tuple[torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> tuple[list[Any], tuple[Any, Any] | None]:
+    ) -> tuple[torch.Tensor, tuple[Any, Any] | None, torch.Tensor | None]:
         """
         Forward-pass routine for SHAAttention.
         Args:
@@ -135,10 +135,11 @@ class SHAAttention(nn.Module):
             past_key_value (Optional[tuple[torch.Tensor]]): Past key and value states for attention.
             attention_mask (Optional[torch.Tensor]): Attention mask.
         Returns:
-            tuple: The output of the attention mechanism and the past key-value states.
+            tuple: The output of the attention mechanism, the past key-value states, and alignment weights (if cross-attention).
         """
         is_cross_attention = self.is_decoder and past_key_value is not None
         past_key_value_rt = None
+        alignment_weights = None
         bsz, _, tgt_len, _ = hidden_states.size()
         # Rearrange dimensions for Conv2D
         hidden_states = hidden_states.permute(0, 3, 1, 2)
@@ -219,7 +220,15 @@ class SHAAttention(nn.Module):
 
         final_attn = torch.cat(attn_output, dim=-1).permute(0, 3, 1, 2)
         final_attn = self.out_proj(final_attn).permute(0, 2, 3, 1)
-        return final_attn, past_key_value_rt
+        
+        # Compute alignment weights for cross-attention (for word-level timestamps)
+        if is_cross_attention and self.is_causal is False:
+            # Average attention weights across all heads: [bsz, num_heads, tgt_len, src_len]
+            stacked_attn = torch.stack(attn_weights, dim=1)  # [bsz, num_heads, 1, src_len]
+            avg_attn = torch.mean(stacked_attn, dim=1)  # [bsz, 1, src_len]
+            alignment_weights = avg_attn.squeeze(1)  # [bsz, src_len]
+        
+        return final_attn, past_key_value_rt, alignment_weights
 
 
 class QcWhisperEncoderLayer(nn.Module):
@@ -258,7 +267,7 @@ class QcWhisperEncoderLayer(nn.Module):
         """
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        hidden_states, _, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=None,
         )
@@ -312,7 +321,7 @@ class QcWhisperDecoderLayer(nn.Module):
             cross_attn_past_key_value (Optional[tuple[torch.Tensor]]): The past key and value states for cross-attention.
 
         Returns:
-            tuple[torch.Tensor, ...]: The output hidden states and optionally the present key and value states.
+            tuple[torch.Tensor, ...]: The output hidden states, present key-value states, and alignment weights (if available).
         """
         # Self-attention block
         residual = hidden_states
@@ -320,7 +329,7 @@ class QcWhisperDecoderLayer(nn.Module):
         self_attn_past_key_value = (
             past_key_value[:2] if past_key_value is not None else None
         )
-        hidden_states, present_key_value = self.self_attn(
+        hidden_states, present_key_value, _ = self.self_attn(
             hidden_states=hidden_states,
             past_key_value=self_attn_past_key_value,
             attention_mask=attention_mask,
@@ -334,7 +343,7 @@ class QcWhisperDecoderLayer(nn.Module):
             cross_attn_past_key_value = (
                 past_key_value[-2:] if past_key_value is not None else None
             )
-        hidden_states, _ = self.encoder_attn(
+        hidden_states, _, alignment_weights = self.encoder_attn(
             hidden_states=hidden_states,
             attention_mask=None,
             past_key_value=cross_attn_past_key_value,
@@ -351,6 +360,7 @@ class QcWhisperDecoderLayer(nn.Module):
         return (
             hidden_states,
             present_key_value,
+            alignment_weights,
         )
 
 
@@ -516,7 +526,7 @@ class QcWhisperDecoder(nn.Module):
         past_key_values: torch.Tensor = None,
         cross_attn_past_key_value: torch.Tensor = None,
         position_ids: torch.Tensor = None,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, Any, Any]:
         """
         Forward-pass routine for the QcWhisperDecoder.
         Args:
@@ -526,7 +536,7 @@ class QcWhisperDecoder(nn.Module):
             cross_attn_past_key_value (torch.Tensor): The past key values for cross-attention.
             position_ids (torch.Tensor): The position IDs for the decoder.
         Returns:
-            tuple: The output of the decoder, including the next cache.
+            tuple: The output of the decoder, including the next cache and alignment weights.
         """
         if (
             attention_mask is None
@@ -550,6 +560,7 @@ class QcWhisperDecoder(nn.Module):
         input_embeds = input_embeds.unsqueeze(0)
         hidden_states = input_embeds + positions
         next_decoder_cache = []
+        alignment_weights_output = None
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx]
             layer_output = decoder_layer(
@@ -560,9 +571,14 @@ class QcWhisperDecoder(nn.Module):
             )
             hidden_states = layer_output[0]
             next_decoder_cache.append(layer_output[1])
+            
+            # Capture alignment weights from the last decoder layer
+            if idx == len(self.layers) - 1 and len(layer_output) > 2:
+                alignment_weights_output = layer_output[2]
+        
         hidden_states = self.layer_norm(hidden_states)
         lm_logits = self.proj_out(hidden_states.permute(0, 3, 1, 2))
-        return lm_logits, tuple(next_decoder_cache)
+        return lm_logits, tuple(next_decoder_cache), alignment_weights_output
 
 
 def replace_component(model: WhisperModel, component_type: str) -> None:

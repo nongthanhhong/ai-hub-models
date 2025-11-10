@@ -192,6 +192,7 @@ class HfWhisperDecoder(BaseModel):
 
         - logits: of shape [1, 51865, 1, 1]
         - kv_cache_self_new: updated key value cache for self attention
+        - alignment_heads_weights: of shape [1, AUDIO_EMB_LEN] (for word-level timestamps)
         """
         assert self.decoder is not None, "model is None"
         input_ids = args[0]
@@ -210,14 +211,14 @@ class HfWhisperDecoder(BaseModel):
         ]
         position_ids = args[-1]
 
-        logits, kv_cache_self_new = self.decoder(
+        logits, kv_cache_self_new, alignment_weights = self.decoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=kv_cache_self,
             cross_attn_past_key_value=kv_cache_cross,
             position_ids=position_ids,
         )
-        return logits, kv_cache_self_new
+        return (logits,) + kv_cache_self_new + (alignment_weights,)
 
     @staticmethod
     def get_input_spec(
@@ -270,11 +271,15 @@ class HfWhisperDecoder(BaseModel):
     def get_output_names(
         num_blocks: int = 12,
     ) -> list[str]:
-        return ["logits"] + [
-            f"{prefix}_cache_self_{i}_out"
-            for i in range(num_blocks)
-            for prefix in ("k", "v")
-        ]
+        return (
+            ["logits"]
+            + [
+                f"{prefix}_cache_self_{i}_out"
+                for i in range(num_blocks)
+                for prefix in ("k", "v")
+            ]
+            + ["alignment_heads_weights"]
+        )
 
     def _get_output_names_for_instance(self) -> list[str]:
         return self.__class__.get_output_names(self.num_blocks)
