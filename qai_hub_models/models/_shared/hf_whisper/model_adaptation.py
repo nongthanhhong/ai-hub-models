@@ -133,8 +133,8 @@ class SHAAttention(nn.Module):
             and self.is_causal is False
         ):
             assert len(past_key_value) > 1
-            key_states = torch.split(past_key_value[0], 1)
-            value_states = torch.split(past_key_value[1], 1)
+            key_states = [past_key_value[0][i:i+1] for i in range(self.num_heads)]
+            value_states = [past_key_value[1][i:i+1] for i in range(self.num_heads)]
         elif past_key_value is not None:
             assert len(past_key_value) > 1
             k_out = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
