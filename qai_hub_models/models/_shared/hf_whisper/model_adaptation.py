@@ -124,8 +124,8 @@ class SHAAttention(nn.Module):
         hidden_states = hidden_states.permute(0, 3, 1, 2)
 
         # Compute query states for each head
-        query_states = self.q_proj_sha(hidden_states).permute(0, 2, 3, 1)
-        query_states = torch.split(query_states, self.head_dim, dim=-1)
+        q_out = self.q_proj_sha(hidden_states).permute(0, 2, 3, 1)
+        query_states = [q_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim] for i in range(self.num_heads)]
 
         if (
             is_cross_attention
@@ -137,10 +137,10 @@ class SHAAttention(nn.Module):
             value_states = torch.split(past_key_value[1], 1)
         elif past_key_value is not None:
             assert len(past_key_value) > 1
-            key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
-            key_states = torch.split(key_states, self.head_dim, dim=2)
-            value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
-            value_states = torch.split(value_states, self.head_dim, dim=3)
+            k_out = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
+            key_states = [k_out[:, :, i*self.head_dim:(i+1)*self.head_dim, :] for i in range(self.num_heads)]
+            v_out = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
+            value_states = [v_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim] for i in range(self.num_heads)]
             past_keys = torch.split(past_key_value[0], 1)
             key_states = [
                 torch.cat([past_keys[i], key_state], dim=-1)
@@ -152,10 +152,10 @@ class SHAAttention(nn.Module):
                 for i, value_state in enumerate(value_states)
             ]
         else:
-            key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
-            key_states = torch.split(key_states, self.head_dim, dim=2)
-            value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
-            value_states = torch.split(value_states, self.head_dim, dim=3)
+            k_out = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
+            key_states = [k_out[:, :, i*self.head_dim:(i+1)*self.head_dim, :] for i in range(self.num_heads)]
+            v_out = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
+            value_states = [v_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim] for i in range(self.num_heads)]
 
         if self.is_decoder and self.is_causal is True:
             past_key_value_rt = (
@@ -439,10 +439,10 @@ class QcWhisperEncoder(nn.Module):
         next_cache = []
         hidden_states = hidden_states.permute(0, 3, 1, 2)
         for idx in range(self.config.decoder_layers):
-            key_states = self.encoder_k_proj_sha[idx](hidden_states).permute(0, 2, 1, 3).contiguous()
-            key_states = torch.split(key_states, self.head_dim, dim=2)
-            value_states = self.encoder_v_proj_sha[idx](hidden_states).permute(0, 2, 3, 1).contiguous()
-            value_states = torch.split(value_states, self.head_dim, dim=3)
+            k_enc_out = self.encoder_k_proj_sha[idx](hidden_states).permute(0, 2, 1, 3).contiguous()
+            key_states = [k_enc_out[:, :, i*self.head_dim:(i+1)*self.head_dim, :] for i in range(self.num_heads)]
+            v_enc_out = self.encoder_v_proj_sha[idx](hidden_states).permute(0, 2, 3, 1).contiguous()
+            value_states = [v_enc_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim] for i in range(self.num_heads)]
             past_key_value = (
                 torch.cat(key_states, dim=0),
                 torch.cat(value_states, dim=0),
