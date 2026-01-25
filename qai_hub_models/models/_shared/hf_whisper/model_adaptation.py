@@ -68,45 +68,24 @@ class SHAAttention(nn.Module):
         self.is_decoder = origin_attn.is_decoder
         self.is_causal = origin_attn.is_causal
 
-        # Initialize Conv2D layers for key, value, and query projections
-        self.q_proj_sha = nn.ModuleList(
-            nn.Conv2d(self.embed_dim, self.head_dim, kernel_size=1, bias=True)
-            for _ in range(self.num_heads)
-        )
-        self.k_proj_sha = nn.ModuleList(
-            nn.Conv2d(self.embed_dim, self.head_dim, kernel_size=1, bias=False)
-            for _ in range(self.num_heads)
-        )
-        self.v_proj_sha = nn.ModuleList(
-            nn.Conv2d(self.embed_dim, self.head_dim, kernel_size=1, bias=True)
-            for _ in range(self.num_heads)
-        )
+        # Initialize combined Conv2D layers for key, value, and query projections
+        self.q_proj_sha = nn.Conv2d(self.embed_dim, self.embed_dim, kernel_size=1, bias=True)
+        self.k_proj_sha = nn.Conv2d(self.embed_dim, self.embed_dim, kernel_size=1, bias=False)
+        self.v_proj_sha = nn.Conv2d(self.embed_dim, self.embed_dim, kernel_size=1, bias=True)
+
         # Copy and convert the weights from original attention for qkv_proj_sha
-        for i in range(self.num_heads):
-            start, end = i * self.head_dim, (i + 1) * self.head_dim
+        q_weight = expand_to_rank4(origin_attn.q_proj.weight.data.clone()) * self.scaling
+        self.q_proj_sha.weight.data.copy_(q_weight)
+        q_bias = origin_attn.q_proj.bias.data.clone() * self.scaling
+        self.q_proj_sha.bias.data.copy_(q_bias)
 
-            # q_proj_sha weights, bias
-            q_weight = (
-                expand_to_rank4(origin_attn.q_proj.weight.data[start:end, :].clone())
-                * self.scaling
-            )
-            self.q_proj_sha[i].weight.data.copy_(q_weight)
-            q_bias = origin_attn.q_proj.bias.data[start:end].clone() * self.scaling
-            self.q_proj_sha[i].bias.data.copy_(q_bias)
+        k_weight = expand_to_rank4(origin_attn.k_proj.weight.data.clone())
+        self.k_proj_sha.weight.data.copy_(k_weight)
 
-            # k_proj_sha weights
-            k_weight = expand_to_rank4(
-                origin_attn.k_proj.weight.data[start:end, :].clone()
-            )
-            self.k_proj_sha[i].weight.data.copy_(k_weight)
-
-            # v_proj_sha weights, bias
-            v_weight = expand_to_rank4(
-                origin_attn.v_proj.weight.data[start:end, :].clone()
-            )
-            self.v_proj_sha[i].weight.data.copy_(v_weight)
-            v_bias = origin_attn.v_proj.bias.data[start:end].clone()
-            self.v_proj_sha[i].bias.data.copy_(v_bias)
+        v_weight = expand_to_rank4(origin_attn.v_proj.weight.data.clone())
+        self.v_proj_sha.weight.data.copy_(v_weight)
+        v_bias = origin_attn.v_proj.bias.data.clone()
+        self.v_proj_sha.bias.data.copy_(v_bias)
 
         # Initialize output projection layer
         self.out_proj = nn.Conv2d(
@@ -145,9 +124,8 @@ class SHAAttention(nn.Module):
         hidden_states = hidden_states.permute(0, 3, 1, 2)
 
         # Compute query states for each head
-        query_states = [
-            q_proj(hidden_states).permute(0, 2, 3, 1) for q_proj in self.q_proj_sha
-        ]
+        query_states = self.q_proj_sha(hidden_states).permute(0, 2, 3, 1)
+        query_states = torch.split(query_states, self.head_dim, dim=-1)
 
         if (
             is_cross_attention
@@ -159,12 +137,10 @@ class SHAAttention(nn.Module):
             value_states = torch.split(past_key_value[1], 1)
         elif past_key_value is not None:
             assert len(past_key_value) > 1
-            key_states = [
-                k_proj(hidden_states).permute(0, 2, 1, 3) for k_proj in self.k_proj_sha
-            ]
-            value_states = [
-                v_proj(hidden_states).permute(0, 2, 3, 1) for v_proj in self.v_proj_sha
-            ]
+            key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
+            key_states = torch.split(key_states, 1, dim=1)
+            value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
+            value_states = torch.split(value_states, 1, dim=1)
             past_keys = torch.split(past_key_value[0], 1)
             key_states = [
                 torch.cat([past_keys[i], key_state], dim=-1)
@@ -176,12 +152,10 @@ class SHAAttention(nn.Module):
                 for i, value_state in enumerate(value_states)
             ]
         else:
-            key_states = [
-                k_proj(hidden_states).permute(0, 2, 1, 3) for k_proj in self.k_proj_sha
-            ]
-            value_states = [
-                v_proj(hidden_states).permute(0, 2, 3, 1) for v_proj in self.v_proj_sha
-            ]
+            key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
+            key_states = torch.split(key_states, 1, dim=1)
+            value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
+            value_states = torch.split(value_states, 1, dim=1)
 
         if self.is_decoder and self.is_causal is True:
             past_key_value_rt = (
@@ -416,36 +390,29 @@ class QcWhisperEncoder(nn.Module):
 
         # Initialize attention projection layers
         self.encoder_k_proj_sha = nn.ModuleList(
-            nn.ModuleList(
-                nn.Conv2d(embed_dim, self.head_dim, kernel_size=1, bias=False)
-                for _ in range(self.num_heads)
-            )
-            for _ in range(self.config.decoder_layers)
+            [nn.Conv2d(embed_dim, embed_dim, kernel_size=1, bias=False)
+            for _ in range(self.config.decoder_layers)]
         )
         self.encoder_v_proj_sha = nn.ModuleList(
-            nn.ModuleList(
-                nn.Conv2d(embed_dim, self.head_dim, kernel_size=1, bias=True)
-                for _ in range(self.num_heads)
-            )
-            for _ in range(self.config.decoder_layers)
+            [nn.Conv2d(embed_dim, embed_dim, kernel_size=1, bias=True)
+            for _ in range(self.config.decoder_layers)]
         )
         # Copy cross-attention weights from the optimized decoder to the encoder
         for i in range(qc_decoder.config.decoder_layers):
-            for num_head in range(qc_decoder.config.decoder_attention_heads):
-                # Get the encoder attention layer from the decoder
-                layer = qc_decoder.layers[i].encoder_attn
-                # Copy the key projection weights from the decoder to the encoder
-                self.encoder_k_proj_sha[i][num_head].weight.data.copy_(
-                    layer.k_proj_sha[num_head].weight.data
-                )
-                # Copy the value projection weights from the decoder to the encoder
-                self.encoder_v_proj_sha[i][num_head].weight.data.copy_(
-                    layer.v_proj_sha[num_head].weight.data
-                )
-                # Copy the value projection biases from the decoder to the encoder
-                self.encoder_v_proj_sha[i][num_head].bias.data.copy_(
-                    layer.v_proj_sha[num_head].bias.data
-                )
+            # Get the encoder attention layer from the decoder
+            layer = qc_decoder.layers[i].encoder_attn
+            # Copy the key projection weights from the decoder to the encoder
+            self.encoder_k_proj_sha[i].weight.data.copy_(
+                layer.k_proj_sha.weight.data
+            )
+            # Copy the value projection weights from the decoder to the encoder
+            self.encoder_v_proj_sha[i].weight.data.copy_(
+                layer.v_proj_sha.weight.data
+            )
+            # Copy the value projection biases from the decoder to the encoder
+            self.encoder_v_proj_sha[i].bias.data.copy_(
+                layer.v_proj_sha.bias.data
+            )
 
     def forward(
         self,
@@ -472,14 +439,10 @@ class QcWhisperEncoder(nn.Module):
         next_cache = []
         hidden_states = hidden_states.permute(0, 3, 1, 2)
         for idx in range(self.config.decoder_layers):
-            key_states = [
-                k_proj(hidden_states).permute(0, 2, 1, 3).contiguous()
-                for k_proj in self.encoder_k_proj_sha[idx]
-            ]
-            value_states = [
-                v_proj(hidden_states).permute(0, 2, 3, 1).contiguous()
-                for v_proj in self.encoder_v_proj_sha[idx]
-            ]
+            key_states = self.encoder_k_proj_sha[idx](hidden_states).permute(0, 2, 1, 3).contiguous()
+            key_states = torch.split(key_states, 1, dim=1)
+            value_states = self.encoder_v_proj_sha[idx](hidden_states).permute(0, 2, 3, 1).contiguous()
+            value_states = torch.split(value_states, 1, dim=1)
             past_key_value = (
                 torch.cat(key_states, dim=0),
                 torch.cat(value_states, dim=0),
