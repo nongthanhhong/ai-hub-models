@@ -138,9 +138,9 @@ class SHAAttention(nn.Module):
         elif past_key_value is not None:
             assert len(past_key_value) > 1
             key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
-            key_states = torch.split(key_states, 1, dim=1)
+            key_states = torch.split(key_states, self.head_dim, dim=2)
             value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
-            value_states = torch.split(value_states, 1, dim=1)
+            value_states = torch.split(value_states, self.head_dim, dim=3)
             past_keys = torch.split(past_key_value[0], 1)
             key_states = [
                 torch.cat([past_keys[i], key_state], dim=-1)
@@ -153,9 +153,9 @@ class SHAAttention(nn.Module):
             ]
         else:
             key_states = self.k_proj_sha(hidden_states).permute(0, 2, 1, 3)
-            key_states = torch.split(key_states, 1, dim=1)
+            key_states = torch.split(key_states, self.head_dim, dim=2)
             value_states = self.v_proj_sha(hidden_states).permute(0, 2, 3, 1)
-            value_states = torch.split(value_states, 1, dim=1)
+            value_states = torch.split(value_states, self.head_dim, dim=3)
 
         if self.is_decoder and self.is_causal is True:
             past_key_value_rt = (
@@ -440,9 +440,9 @@ class QcWhisperEncoder(nn.Module):
         hidden_states = hidden_states.permute(0, 3, 1, 2)
         for idx in range(self.config.decoder_layers):
             key_states = self.encoder_k_proj_sha[idx](hidden_states).permute(0, 2, 1, 3).contiguous()
-            key_states = torch.split(key_states, 1, dim=1)
+            key_states = torch.split(key_states, self.head_dim, dim=2)
             value_states = self.encoder_v_proj_sha[idx](hidden_states).permute(0, 2, 3, 1).contiguous()
-            value_states = torch.split(value_states, 1, dim=1)
+            value_states = torch.split(value_states, self.head_dim, dim=3)
             past_key_value = (
                 torch.cat(key_states, dim=0),
                 torch.cat(value_states, dim=0),
