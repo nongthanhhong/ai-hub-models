@@ -159,12 +159,12 @@ class SHAAttention(nn.Module):
 
         if self.is_decoder and self.is_causal is True:
             past_key_value_rt = (
-                torch.cat(key_states, dim=0)[:, :, :, 1:].reshape(
-                    self.num_heads, bsz, self.head_dim, -1
-                ),
-                torch.cat(value_states, dim=0)[:, :, 1:, :].reshape(
-                    self.num_heads, bsz, -1, self.head_dim
-                ),
+                torch.cat(key_states, dim=0)[:, :, :, 1:]
+                .reshape(self.num_heads, bsz, self.head_dim, -1)
+                .contiguous(),
+                torch.cat(value_states, dim=0)[:, :, 1:, :]
+                .reshape(self.num_heads, bsz, -1, self.head_dim)
+                .contiguous(),
             )
 
         src_len = value_states[0].size(-2)
@@ -440,12 +440,12 @@ class QcWhisperEncoder(nn.Module):
         hidden_states = hidden_states.permute(0, 3, 1, 2)
         for idx in range(self.config.decoder_layers):
             k_enc_out = self.encoder_k_proj_sha[idx](hidden_states).permute(0, 2, 1, 3).contiguous()
-            key_states = [k_enc_out[:, :, i*self.head_dim:(i+1)*self.head_dim, :] for i in range(self.num_heads)]
+            key_states = [k_enc_out[:, :, i*self.head_dim:(i+1)*self.head_dim, :].contiguous() for i in range(self.num_heads)]
             v_enc_out = self.encoder_v_proj_sha[idx](hidden_states).permute(0, 2, 3, 1).contiguous()
-            value_states = [v_enc_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim] for i in range(self.num_heads)]
+            value_states = [v_enc_out[:, :, :, i*self.head_dim:(i+1)*self.head_dim].contiguous() for i in range(self.num_heads)]
             past_key_value = (
-                torch.cat(key_states, dim=0),
-                torch.cat(value_states, dim=0),
+                torch.cat(key_states, dim=0).contiguous(),
+                torch.cat(value_states, dim=0).contiguous(),
             )
             next_cache.append(past_key_value)
         return (tuple(next_cache),)
